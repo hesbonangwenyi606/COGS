@@ -1,0 +1,271 @@
+// Armco nightly COGS feed: Zoho Books -> Zoho Sheet
+// Keep TEST_ONLY true until the Books totals have been checked.
+
+void feedCogs()
+{
+    // 1. Settings
+    TEST_ONLY = true;
+    TRANSACTION_LABELS_CONFIRMED = false;
+
+    orgId = "941141787";
+    cogsAccounts = List();
+    cogsAccounts.add("1462401000000034003");
+    // Add one line per additional confirmed COGS account.
+
+    sheetId = "PUT_SHEET_RESOURCE_ID_HERE";
+    sheetName = "COGS";
+    booksConn = "books_conn";
+    sheetConn = "sheet_conn";
+    apiDomain = "https://www.zohoapis.com"; // Change for your Zoho data center.
+
+    windowDays = 14; // Today plus the previous 13 days.
+    pageSize = 200;
+    maxPages = 50;
+
+    // 2. Check settings and prepare daily totals
+    if (sheetId == "PUT_SHEET_RESOURCE_ID_HERE")
+    {
+        info "STOPPED: replace the Sheet ID in the settings.";
+        return;
+    }
+    if (cogsAccounts.size() == 0)
+    {
+        info "STOPPED: add at least one confirmed COGS account ID.";
+        return;
+    }
+    for each account in cogsAccounts
+    {
+        if (account == "PUT_COGS_ACCOUNT_ID_HERE" || account.toString().trim().length() == 0)
+        {
+            info "STOPPED: replace the COGS account placeholder with a confirmed ID.";
+            return;
+        }
+    }
+
+    fromDate = zoho.currentDate.subDay(windowDays - 1).toString("yyyy-MM-dd");
+    toDate = zoho.currentDate.toString("yyyy-MM-dd");
+    dates = List();
+    totals = Map();
+    typesSeen = List();
+
+    i = 0;
+    while (i < windowDays)
+    {
+        day = zoho.currentDate.subDay(windowDays - 1 - i).toString("yyyy-MM-dd");
+        dates.add(day);
+        totals.put(day, 0.0);
+        i = i + 1;
+    }
+
+    // 3. Read all Books pages. Any incomplete response stops the run before writes.
+    booksFailed = false;
+    booksError = "";
+
+    for each account in cogsAccounts
+    {
+        page = 1;
+        hasMore = true;
+
+        while (hasMore && page <= maxPages && !booksFailed)
+        {
+            url = apiDomain + "/books/v3/registers/" + account + "/transactions"
+                + "?organization_id=" + orgId
+                + "&filter_by=TransactionDate.CustomDate"
+                + "&from_date=" + fromDate
+                + "&to_date=" + toDate
+                + "&page=" + page
+                + "&per_page=" + pageSize;
+
+            response = invokeurl
+            [
+                url : url
+                type : GET
+                connection : booksConn
+            ];
+
+            if (page == 1)
+            {
+                info "Books response for account " + account + ":";
+                info response;
+            }
+
+            if (response == null || response.get("code") != 0)
+            {
+                booksFailed = true;
+                booksError = "Books request failed for account " + account + ": " + response;
+            }
+            else
+            {
+                registerData = response.get("register_transactions");
+                if (registerData == null || registerData.get("account_transactions") == null)
+                {
+                    booksFailed = true;
+                    booksError = "Books response is missing account transactions for " + account;
+                }
+                else
+                {
+                    transactions = registerData.get("account_transactions");
+                    for each transaction in transactions
+                    {
+                        type = ifnull(transaction.get("transaction_type"), "")
+                            .toString().toLowerCase().replaceAll(" ", "_");
+
+                        if (!typesSeen.contains(type))
+                        {
+                            typesSeen.add(type);
+                        }
+
+                        if (ifnull(transaction.get("account_id"), "").toString() != account.toString())
+                        {
+                            booksFailed = true;
+                            booksError = "Books returned an unexpected account ID for " + account;
+                        }
+
+                        if (type == "invoice" || type == "creditnote" || type == "credit_note")
+                        {
+                            transactionDate = transaction.get("transaction_date");
+                            if (transactionDate == null)
+                            {
+                                transactionDate = transaction.get("date");
+                            }
+
+                            if (transactionDate == null || transactionDate.toString().length() < 10)
+                            {
+                                booksFailed = true;
+                                booksError = "A qualifying Books transaction has no valid date.";
+                            }
+                            else
+                            {
+                                day = transactionDate.toString().subString(0, 10);
+                                if (day < fromDate || day > toDate)
+                                {
+                                    booksFailed = true;
+                                    booksError = "Books returned a transaction outside the requested dates: " + day;
+                                }
+                                else
+                                {
+                                    debit = ifnull(transaction.get("debit_amount"), 0).toDecimal();
+                                    credit = ifnull(transaction.get("credit_amount"), 0).toDecimal();
+                                    totals.put(day, totals.get(day).toDecimal() + debit - credit);
+                                }
+                            }
+                        }
+                    }
+
+                    pageContext = response.get("page_context");
+                    if (pageContext == null || !pageContext.containKey("has_more_page"))
+                    {
+                        booksFailed = true;
+                        booksError = "Books response is missing pagination details.";
+                    }
+                    else if (pageContext.get("has_more_page") == true)
+                    {
+                        if (page == maxPages)
+                        {
+                            booksFailed = true;
+                            booksError = "Books has more pages than the safety limit allows.";
+                        }
+                        else
+                        {
+                            page = page + 1;
+                        }
+                    }
+                    else
+                    {
+                        hasMore = false;
+                    }
+                }
+            }
+        }
+    }
+
+    info "Transaction types: " + typesSeen;
+    info "Daily totals (debits minus credits): " + totals;
+
+    if (booksFailed)
+    {
+        info "STOPPED before Sheet access: " + booksError;
+        return;
+    }
+
+    // 4. Confirm there is exactly one plain-text Date row for every day.
+    sheetQuery = Map();
+    sheetQuery.put("records_start_index", 1);
+    sheetQuery.put("count", 1000);
+    sheetResponse = zoho.sheet.getRecords(sheetId, sheetName, sheetQuery, sheetConn);
+
+    if (sheetResponse == null || sheetResponse.get("status") != "success"
+        || sheetResponse.get("records") == null)
+    {
+        info "STOPPED: could not read the COGS worksheet: " + sheetResponse;
+        return;
+    }
+
+    rowCounts = Map();
+    for each day in dates
+    {
+        rowCounts.put(day, 0);
+    }
+    for each sheetRow in sheetResponse.get("records")
+    {
+        sheetDate = ifnull(sheetRow.get("Date"), "").toString().trim();
+        if (rowCounts.containKey(sheetDate))
+        {
+            rowCounts.put(sheetDate, rowCounts.get(sheetDate).toLong() + 1);
+        }
+    }
+
+    sheetDatesValid = true;
+    for each day in dates
+    {
+        if (rowCounts.get(day).toLong() != 1)
+        {
+            sheetDatesValid = false;
+            info "Expected one Date row for " + day + "; found " + rowCounts.get(day);
+        }
+    }
+    if (!sheetDatesValid)
+    {
+        info "STOPPED: no Sheet rows were updated. Fix the date rows and run again.";
+        return;
+    }
+
+    // 5. Test mode ends here. Both switches are needed before live updates.
+    if (TEST_ONLY)
+    {
+        info "TEST_ONLY is true. Nothing was written to the Sheet.";
+        return;
+    }
+    if (!TRANSACTION_LABELS_CONFIRMED)
+    {
+        info "STOPPED: verify the transaction labels in the test log first.";
+        return;
+    }
+
+    // 6. Update one matching row per day, including days with zero COGS.
+    // If a later update fails, earlier rows may already have been updated.
+    for each day in dates
+    {
+        amount = totals.get(day).toDecimal().round(2);
+        newValues = Map();
+        newValues.put("COGS", amount);
+
+        options = Map();
+        options.put("first_match_only", "true");
+        criteria = "\"Date\"=\"" + day + "\"";
+
+        updateResponse = zoho.sheet.updateRecords(
+            sheetId, sheetName, criteria, newValues, options, sheetConn
+        );
+        affectedRows = ifnull(updateResponse.get("no_of_affected_rows"), 0).toLong();
+
+        if (updateResponse.get("status") != "success" || affectedRows != 1)
+        {
+            info "STOPPED while updating " + day + ": " + updateResponse;
+            return;
+        }
+        info day + " -> " + amount;
+    }
+
+    info "Updated COGS for " + windowDays + " dates.";
+}
