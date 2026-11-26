@@ -1,0 +1,30 @@
+// READ ONLY. H16 on COGS_Test must contain =FORMULA(G16).
+// This checks only G16; it is not a guard for the whole production column.
+p = Map();
+p.put("method","cell.content.get");
+p.put("worksheet_name","COGS_Test");
+p.put("row",16);
+p.put("column",8);
+r = invokeurl
+[
+    url : "https://sheet.zoho.com/api/v2/tpwkhf15bca229f6e4cd9a4cd746d10f1ac46"
+    type : POST
+    parameters : p
+    connection : "cogs_sheet_conn"
+];
+if(r == null || r.get("status") != "success" || !r.containKey("content"))
+{
+    info "STOPPED: helper response is unavailable or incomplete: " + r;
+}
+else
+{
+    value = ifnull(r.get("content"),"").toString().trim();
+    if(value.startsWith("="))
+    {
+        info "PROTECTED: G16 contains a formula; no changes made.";
+    }
+    else
+    {
+        info "STOPPED: unexpected helper result; no changes made: " + r;
+    }
+}

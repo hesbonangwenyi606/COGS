@@ -1,0 +1,17 @@
+// Read-only diagnostic for the COGS worksheet. Paste into a Zoho Books
+// function editor; it does not change the workbook.
+params = Map();
+params.put("method", "range.content.get");
+params.put("worksheet_name", "COGS");
+params.put("start_row", 13);
+params.put("end_row", 26);
+params.put("start_column", 1);
+params.put("end_column", 7);
+response = invokeurl
+[
+    url : "https://sheet.zoho.com/api/v2/tpwkhf15bca229f6e4cd9a4cd746d10f1ac46"
+    type : POST
+    parameters : params
+    connection : "cogs_sheet_conn"
+];
+info "COGS A13:G26 read-only result: " + response;

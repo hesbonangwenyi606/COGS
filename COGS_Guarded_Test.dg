@@ -1,0 +1,365 @@
+// PREVIEW: writes helper formulas to COGS_Guard!A1:A14; does not write COGS values.
+TEST_ONLY = true;
+// Test-tab override only; this does not verify formula protection.
+FORMULA_PROTECTION_VERIFIED = false;
+orgId = "941141787";
+accountId = "1462401000000109433";
+fromDate = zoho.currentdate.subDay(13).toString("yyyy-MM-dd");
+toDate = zoho.currentdate.toString("yyyy-MM-dd");
+pages = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50".toList(",");
+hasMore = true;
+failed = false;
+matches = 0;
+totals = Map();
+for each page in pages
+{
+    if(hasMore && !failed)
+    {
+        url = "https://www.zohoapis.com/books/v3/registers/" + accountId + "/transactions?organization_id=" + orgId + "&filter_by=TransactionDate.CustomDate&from_date=" + fromDate + "&to_date=" + toDate + "&page=" + page + "&per_page=200";
+        response = invokeurl
+        [
+            url : url
+            type : GET
+            connection : "cogs_books_read"
+        ];
+        if(response == null || response.get("code") != 0)
+        {
+            info "STOPPED: Books request failed: " + response;
+            failed = true;
+        }
+        else
+        {
+            register = response.get("register_transactions");
+            context = response.get("page_context");
+            if(register == null || register.get("account_transactions") == null || context == null || !context.containKey("has_more_page"))
+            {
+                info "STOPPED: missing transactions or pagination.";
+                failed = true;
+            }
+            else
+            {
+                for each group in register.get("account_transactions")
+                {
+                    entries = group.get("account_transactions");
+                    if(entries == null)
+                    {
+                        failed = true;
+                    }
+                    else
+                    {
+                        for each entry in entries
+                        {
+                            entryAccount = ifnull(entry.get("account_id"),"").toString();
+                            entryType = ifnull(entry.get("transaction_type"),"").toString().toLowerCase();
+                            if(entryAccount == accountId && (entryType == "invoice" || entryType == "creditnote" || entryType == "credit_note"))
+                            {
+                                day = ifnull(entry.get("date"),"").toString();
+                                if(day.length() < 10)
+                                {
+                                    failed = true;
+                                }
+                                else
+                                {
+                                    day = day.subString(0,10);
+                                    debitText = ifnull(entry.get("debit"),"").toString().trim();
+                                    creditText = ifnull(entry.get("credit"),"").toString().trim();
+                                    debit = 0.0;
+                                    credit = 0.0;
+                                    if(debitText != "") { debit = debitText.toDecimal(); }
+                                    if(creditText != "") { credit = creditText.toDecimal(); }
+                                    totals.put(day,ifnull(totals.get(day),0).toDecimal() + debit - credit);
+                                    matches = matches + 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                hasMore = context.get("has_more_page") == true;
+            }
+        }
+    }
+}
+if(failed || hasMore)
+{
+    info "STOPPED: Books data incomplete; no Sheet access.";
+}
+else
+{
+    info "Date range: " + fromDate + " to " + toDate;
+    info "Matching entries: " + matches;
+    info "Daily COGS totals: " + totals;
+    // Read all existing rows with formulas exposed. Rows must already exist.
+    sheetUrl = "https://sheet.zoho.com/api/v2/tpwkhf15bca229f6e4cd9a4cd746d10f1ac46";
+    query = Map();
+    query.put("method","worksheet.records.fetch");
+    query.put("worksheet_name","COGS_Test");
+    query.put("header_row",15);
+    query.put("render_option","formula");
+    query.put("records_start_index",1);
+    query.put("count",1000);
+    sheetResponse = invokeurl
+    [
+        url : sheetUrl
+        type : POST
+        parameters : query
+        connection : "cogs_sheet_conn"
+    ];
+    if(sheetResponse == null || sheetResponse.get("status") != "success" || sheetResponse.get("records") == null)
+    {
+        info "STOPPED: cannot read COGS rows: " + sheetResponse;
+    }
+    else
+    {
+        records = sheetResponse.get("records");
+        safe = true;
+        if(records.size() >= 1000)
+        {
+            safe = false;
+            info "STOPPED: 1000-row safety limit reached.";
+        }
+        offsets = "13,12,11,10,9,8,7,6,5,4,3,2,1,0".toList(",");
+        for each offset in offsets
+        {
+            day = zoho.currentdate.subDay(offset.toLong()).toString("yyyy-MM-dd");
+            found = 0;
+            for each record in records
+            {
+                sheetDate = ifnull(record.get("Date"),"").toString().trim();
+                if(sheetDate == day || sheetDate == zoho.currentdate.subDay(offset.toLong()).toString("MM/dd/yyyy"))
+                {
+                    found = found + 1;
+                    cellValue = ifnull(record.get("COGS"),"").toString().trim();
+                    if(cellValue.startsWith("="))
+                    {
+                        safe = false;
+                        info "STOPPED: formula in COGS for " + day;
+                    }
+                }
+            }
+            if(found > 1)
+            {
+                safe = false;
+                info "STOPPED: duplicate date " + day + "; found " + found;
+            }
+            if(found == 0) { info "PREVIEW: create missing date " + day; }
+            info "PREVIEW " + day + " = " + ifnull(totals.get(day),0).toDecimal().round(2);
+        }
+        // COGS_Guard is a dedicated scratch worksheet; cells A1:A14 are overwritten.
+        // Do not use this on any worksheet containing user data or formulas.
+        helperRow = 1;
+        for each offset in offsets
+        {
+            guardDay = zoho.currentdate.subDay(offset.toLong()).toString("yyyy-MM-dd");
+            guardDate = zoho.currentdate.subDay(offset.toLong()).toString("MM/dd/yyyy");
+            guardFound = 0;
+            guardRow = 0;
+            for each record in records
+            {
+                recordDate = ifnull(record.get("Date"),"").toString().trim();
+                if(recordDate == guardDay || recordDate == guardDate)
+                {
+                    guardFound = guardFound + 1;
+                    guardRow = ifnull(record.get("row_index"),0).toLong();
+                }
+            }
+            if(guardFound == 0)
+            {
+                info "GUARD: missing date will be checked after creation: " + guardDay;
+            }
+            else if(guardFound != 1 || guardRow <= 15)
+            {
+                safe = false;
+                info "GUARD STOP: one existing row is required for " + guardDay;
+            }
+            else
+            {
+                formula = "=IF(ISNA(FORMULA('COGS_Test'!G" + guardRow + ")),\"NO_FORMULA\",FORMULA('COGS_Test'!G" + guardRow + "))";
+                setHelper = Map();
+                setHelper.put("method","cell.content.set");
+                setHelper.put("worksheet_name","COGS_Guard");
+                setHelper.put("row",helperRow);
+                setHelper.put("column",1);
+                setHelper.put("content",formula);
+                helperWrite = invokeurl
+                [
+                    url : sheetUrl
+                    type : POST
+                    parameters : setHelper
+                    connection : "cogs_sheet_conn"
+                ];
+                if(helperWrite == null || helperWrite.get("status") != "success")
+                {
+                    safe = false;
+                    info "GUARD STOP: helper could not be set: " + helperWrite;
+                }
+                else
+                {
+                    getHelper = Map();
+                    getHelper.put("method","cell.content.get");
+                    getHelper.put("worksheet_name","COGS_Guard");
+                    getHelper.put("row",helperRow);
+                    getHelper.put("column",1);
+                    helperRead = invokeurl
+                    [
+                        url : sheetUrl
+                        type : POST
+                        parameters : getHelper
+                        connection : "cogs_sheet_conn"
+                    ];
+                    if(helperRead == null || helperRead.get("status") != "success" || ifnull(helperRead.get("content"),"").toString().trim() != "NO_FORMULA")
+                    {
+                        safe = false;
+                        info "GUARD STOP: formula or unexpected helper result for " + guardDay + ": " + helperRead;
+                    }
+                    else
+                    {
+                        info "GUARD OK " + guardDay;
+                    }
+                }
+            }
+            helperRow = helperRow + 1;
+        }
+        if(!safe)
+        {
+            info "No updates: resolve duplicate dates or formula warnings.";
+        }
+        else if(TEST_ONLY || !FORMULA_PROTECTION_VERIFIED)
+        {
+            info "Writes disabled: no updates made.";
+        }
+        else
+        {
+            updateFailed = false;
+            for each offset in offsets
+            {
+                if(!updateFailed)
+                {
+                    day = zoho.currentdate.subDay(offset.toLong()).toString("yyyy-MM-dd");
+                    amount = ifnull(totals.get(day),0).toDecimal().round(2);
+                    found = 0;
+                    targetRow = 0;
+                    for each record in records
+                    {
+                        if(ifnull(record.get("Date"),"").toString().trim() == day || ifnull(record.get("Date"),"").toString().trim() == zoho.currentdate.subDay(offset.toLong()).toString("MM/dd/yyyy"))
+                        {
+                            found = found + 1;
+                            targetRow = record.get("row_index").toLong();
+                        }
+                    }
+                    data = Map();
+                    if(found == 0)
+                    {
+                        data.put("Date",day);
+                        newRows = List();
+                        newRows.add(data);
+                        options = Map();
+                        options.put("header_row",15);
+                        addResponse = zoho.sheet.createRecords("tpwkhf15bca229f6e4cd9a4cd746d10f1ac46","COGS_Test",newRows,options,"cogs_sheet_conn");
+                        if(addResponse == null || addResponse.get("status") != "success" || addResponse.get("warning") != null)
+                        {
+                            updateFailed = true;
+                            info "STOPPED adding " + day + ": " + addResponse + ". Earlier rows may have been updated.";
+                        }
+                        else
+                        {
+                            targetRow = ifnull(addResponse.get("start_row"),0).toLong();
+                            if(targetRow <= 15)
+                            {
+                                updateFailed = true;
+                                info "STOPPED: Zoho did not return the new row: " + addResponse;
+                            }
+                            else
+                            {
+                                // Check the actual new destination before writing column G.
+                                newGuard = Map();
+                                newGuard.put("method","cell.content.set");
+                                newGuard.put("worksheet_name","COGS_Guard");
+                                newGuard.put("row",14 - offset.toLong());
+                                newGuard.put("column",1);
+                                newGuard.put("content","=IF(ISNA(FORMULA('COGS_Test'!G" + targetRow + ")),\"NO_FORMULA\",FORMULA('COGS_Test'!G" + targetRow + "))");
+                                newGuardWrite = invokeurl
+                                [
+                                    url : sheetUrl
+                                    type : POST
+                                    parameters : newGuard
+                                    connection : "cogs_sheet_conn"
+                                ];
+                                newGuardRead = null;
+                                if(newGuardWrite != null && newGuardWrite.get("status") == "success")
+                                {
+                                    guardQuery = Map();
+                                    guardQuery.put("method","cell.content.get");
+                                    guardQuery.put("worksheet_name","COGS_Guard");
+                                    guardQuery.put("row",14 - offset.toLong());
+                                    guardQuery.put("column",1);
+                                    newGuardRead = invokeurl
+                                    [
+                                        url : sheetUrl
+                                        type : POST
+                                        parameters : guardQuery
+                                        connection : "cogs_sheet_conn"
+                                    ];
+                                }
+                                if(newGuardRead == null || newGuardRead.get("status") != "success" || ifnull(newGuardRead.get("content"),"").toString().trim() != "NO_FORMULA")
+                                {
+                                    updateFailed = true;
+                                    info "STOPPED: new date created, but column G was not safe: " + newGuardRead;
+                                }
+                                else
+                                {
+                                newCell = Map();
+                                newCell.put("method","cell.content.set");
+                                newCell.put("worksheet_name","COGS_Test");
+                                newCell.put("row",targetRow);
+                                newCell.put("column",7);
+                                newCell.put("content",amount.toString());
+                                cellResponse = invokeurl
+                                [
+                                    url : sheetUrl
+                                    type : POST
+                                    parameters : newCell
+                                    connection : "cogs_sheet_conn"
+                                ];
+                                if(cellResponse == null || cellResponse.get("status") != "success")
+                                {
+                                    updateFailed = true;
+                                    info "STOPPED: date created but amount not confirmed for " + day + ": " + cellResponse;
+                                }
+                                else
+                                {
+                                    info "Added " + day + " = " + amount;
+                                }
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                    updateParams = Map();
+                    updateParams.put("method","cell.content.set");
+                    updateParams.put("worksheet_name","COGS_Test");
+                    updateParams.put("row",targetRow);
+                    updateParams.put("column",7);
+                    updateParams.put("content",amount.toString());
+                    updateResponse = invokeurl
+                    [
+                        url : sheetUrl
+                        type : POST
+                        parameters : updateParams
+                        connection : "cogs_sheet_conn"
+                    ];
+                    if(updateResponse == null || updateResponse.get("status") != "success")
+                    {
+                        updateFailed = true;
+                        info "STOPPED during " + day + ": " + updateResponse + ". Earlier rows may have been updated.";
+                    }
+                    else
+                    {
+                        info "Updated " + day + " = " + amount;
+                    }
+                    }
+                }
+            }
+        }
+    }
+}

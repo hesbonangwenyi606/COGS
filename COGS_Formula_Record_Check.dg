@@ -1,0 +1,17 @@
+// Read-only test: request the COGS column as formulas.
+p = Map();
+p.put("method","worksheet.records.fetch");
+p.put("worksheet_name","COGS_Test");
+p.put("header_row",15);
+p.put("column_names","COGS");
+p.put("render_option","formula");
+p.put("records_start_index",1);
+p.put("count",2);
+r = invokeurl
+[
+    url : "https://sheet.zoho.com/api/v2/tpwkhf15bca229f6e4cd9a4cd746d10f1ac46"
+    type : POST
+    parameters : p
+    connection : "cogs_sheet_conn"
+];
+info "Formula record test: " + r;

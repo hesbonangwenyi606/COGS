@@ -1,0 +1,15 @@
+// One-cell write test: COGS_Test!G15 only. Does not touch the COGS tab.
+params = Map();
+params.put("method","cell.content.set");
+params.put("worksheet_name","COGS_Test");
+params.put("row",15);
+params.put("column",7);
+params.put("content","3135570.77");
+response = invokeurl
+[
+    url : "https://sheet.zoho.com/api/v2/tpwkhf15bca229f6e4cd9a4cd746d10f1ac46"
+    type : POST
+    parameters : params
+    connection : "cogs_sheet_conn"
+];
+info "COGS_Test G15 result: " + response;

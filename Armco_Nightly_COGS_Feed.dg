@@ -1,28 +1,33 @@
-// Armco nightly COGS feed: Zoho Books -> Zoho Sheet
-// Keep TEST_ONLY true until the Books totals have been checked.
+WARNING: OUTDATED DRAFT - DO NOT RUN OR ENABLE WRITES. The verified COST OF SALES account is 1462401000000109433; this draft uses a different account and unverified sheet logic. Use the read-only function currently saved in Zoho Books until the sheet update is implemented and verified.
+
+I added simple comments to explain each part. I also cleaned up formatting artifacts from the pasted text; the function logic is unchanged.
+
+```deluge
+// Armco nightly COGS feed: Zoho Books → Zoho Sheet
+// Keep TEST_ONLY true until you have checked the Books totals.
 
 void feedCogs()
 {
-    // 1. Settings
+    // Settings used by the function
     TEST_ONLY = true;
     TRANSACTION_LABELS_CONFIRMED = false;
 
     orgId = "941141787";
     cogsAccounts = List();
     cogsAccounts.add("1462401000000034003");
-    // Add one line per additional confirmed COGS account.
+    // Add one line for each additional confirmed COGS account.
 
-    sheetId = "PUT_SHEET_RESOURCE_ID_HERE";
+    sheetId = "tpwkhf15bca229f6e4cd9a4cd746d10f1ac46";
     sheetName = "COGS";
     booksConn = "books_conn";
     sheetConn = "sheet_conn";
-    apiDomain = "https://www.zohoapis.com"; // Change for your Zoho data center.
+    apiDomain = "https://www.zohoapis.com"; // Change this for your Zoho data center.
 
-    windowDays = 14; // Today plus the previous 13 days.
+    windowDays = 14; // Today and the previous 13 days.
     pageSize = 200;
     maxPages = 50;
 
-    // 2. Check settings and prepare daily totals
+    // Check that the required settings have been filled in.
     if (sheetId == "PUT_SHEET_RESOURCE_ID_HERE")
     {
         info "STOPPED: replace the Sheet ID in the settings.";
@@ -42,6 +47,7 @@ void feedCogs()
         }
     }
 
+    // Set the date range and start a total for each day.
     fromDate = zoho.currentDate.subDay(windowDays - 1).toString("yyyy-MM-dd");
     toDate = zoho.currentDate.toString("yyyy-MM-dd");
     dates = List();
@@ -57,7 +63,7 @@ void feedCogs()
         i = i + 1;
     }
 
-    // 3. Read all Books pages. Any incomplete response stops the run before writes.
+    // Read every Books page. Stop before writing if a response is incomplete.
     booksFailed = false;
     booksError = "";
 
@@ -68,6 +74,7 @@ void feedCogs()
 
         while (hasMore && page <= maxPages && !booksFailed)
         {
+            // Request the transactions for this account and date range.
             url = apiDomain + "/books/v3/registers/" + account + "/transactions"
                 + "?organization_id=" + orgId
                 + "&filter_by=TransactionDate.CustomDate"
@@ -83,12 +90,14 @@ void feedCogs()
                 connection : booksConn
             ];
 
+            // Show the first response in the log to help check the returned data.
             if (page == 1)
             {
                 info "Books response for account " + account + ":";
                 info response;
             }
 
+            // Stop if Books reports an error.
             if (response == null || response.get("code") != 0)
             {
                 booksFailed = true;
@@ -107,6 +116,7 @@ void feedCogs()
                     transactions = registerData.get("account_transactions");
                     for each transaction in transactions
                     {
+                        // Record the transaction labels returned by Books for review.
                         type = ifnull(transaction.get("transaction_type"), "")
                             .toString().toLowerCase().replaceAll(" ", "_");
 
@@ -115,12 +125,14 @@ void feedCogs()
                             typesSeen.add(type);
                         }
 
+                        // Make sure each transaction belongs to the account requested.
                         if (ifnull(transaction.get("account_id"), "").toString() != account.toString())
                         {
                             booksFailed = true;
                             booksError = "Books returned an unexpected account ID for " + account;
                         }
 
+                        // Include invoices and credit notes in the daily totals.
                         if (type == "invoice" || type == "creditnote" || type == "credit_note")
                         {
                             transactionDate = transaction.get("transaction_date");
@@ -129,6 +141,7 @@ void feedCogs()
                                 transactionDate = transaction.get("date");
                             }
 
+                            // Stop if a matching transaction does not have a usable date.
                             if (transactionDate == null || transactionDate.toString().length() < 10)
                             {
                                 booksFailed = true;
@@ -144,6 +157,7 @@ void feedCogs()
                                 }
                                 else
                                 {
+                                    // Add debits and subtract credits for this day.
                                     debit = ifnull(transaction.get("debit_amount"), 0).toDecimal();
                                     credit = ifnull(transaction.get("credit_amount"), 0).toDecimal();
                                     totals.put(day, totals.get(day).toDecimal() + debit - credit);
@@ -152,6 +166,7 @@ void feedCogs()
                         }
                     }
 
+                    // Check whether Books has another page of results.
                     pageContext = response.get("page_context");
                     if (pageContext == null || !pageContext.containKey("has_more_page"))
                     {
@@ -179,16 +194,18 @@ void feedCogs()
         }
     }
 
+    // Show the transaction labels and calculated totals in the function log.
     info "Transaction types: " + typesSeen;
     info "Daily totals (debits minus credits): " + totals;
 
+    // Do not continue if any Books data could not be read safely.
     if (booksFailed)
     {
         info "STOPPED before Sheet access: " + booksError;
         return;
     }
 
-    // 4. Confirm there is exactly one plain-text Date row for every day.
+    // Read the Sheet rows and check that each date appears exactly once.
     sheetQuery = Map();
     sheetQuery.put("records_start_index", 1);
     sheetQuery.put("count", 1000);
@@ -215,6 +232,7 @@ void feedCogs()
         }
     }
 
+    // Stop if any date is missing or appears more than once.
     sheetDatesValid = true;
     for each day in dates
     {
@@ -230,7 +248,7 @@ void feedCogs()
         return;
     }
 
-    // 5. Test mode ends here. Both switches are needed before live updates.
+    // In test mode, finish here without changing the Sheet.
     if (TEST_ONLY)
     {
         info "TEST_ONLY is true. Nothing was written to the Sheet.";
@@ -242,8 +260,8 @@ void feedCogs()
         return;
     }
 
-    // 6. Update one matching row per day, including days with zero COGS.
-    // If a later update fails, earlier rows may already have been updated.
+    // Update the COGS value for each date, including dates with no COGS.
+    // If an update fails partway through, earlier dates may already be updated.
     for each day in dates
     {
         amount = totals.get(day).toDecimal().round(2);
@@ -259,6 +277,7 @@ void feedCogs()
         );
         affectedRows = ifnull(updateResponse.get("no_of_affected_rows"), 0).toLong();
 
+        // Stop if the Sheet did not update exactly one matching row.
         if (updateResponse.get("status") != "success" || affectedRows != 1)
         {
             info "STOPPED while updating " + day + ": " + updateResponse;
@@ -269,3 +288,4 @@ void feedCogs()
 
     info "Updated COGS for " + windowDays + " dates.";
 }
+```

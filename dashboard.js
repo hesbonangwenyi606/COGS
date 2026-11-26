@@ -1,36 +1,29 @@
 const $ = id => document.getElementById(id);
 function applyFeed(text, name) {
-  const get = (pattern) => text.match(pattern)?.[1];
-  const test = get(/TEST_ONLY\s*=\s*(true|false)\s*;/i);
-  const confirmed = get(/TRANSACTION_LABELS_CONFIRMED\s*=\s*(true|false)\s*;/i);
-  const sheet = get(/sheetId\s*=\s*"([^"]*)"/);
-  const days = get(/windowDays\s*=\s*(\d+)/);
-  if (!test || !confirmed || sheet === undefined || !days || !/cogsAccounts\s*=/.test(text)) {
-    $('source').textContent = `Could not read ${name}. Choose a valid COGS feed file.`;
+  const sheet = text.match(/sheetUrl\s*=\s*"https:\/\/sheet\.zoho\.com\/api\/v2\/([^"\s]+)"/);
+  const account = text.match(/accountId\s*=\s*"([^"\s]+)"/);
+  const days = text.match(/fromDate\s*=\s*zoho\.currentdate\.subDay\((\d+)\)/);
+  if (!sheet || !account || !days || !text.includes('cell.content.set')) {
+    $('source').textContent = `Could not read ${name}. Choose the current production file.`;
     return;
   }
-  const isTest = test.toLowerCase() === 'true';
-  const labelsConfirmed = confirmed.toLowerCase() === 'true';
-  const hasSheet = !!sheet.trim() && !sheet.includes('PUT_');
-  const accounts = [...text.matchAll(/^\s*cogsAccounts\.add\("([^"]+)"\)/gm)].filter(m => !m[1].includes('PUT_')).length;
-  $('mode').textContent = isTest ? 'Test mode' : labelsConfirmed ? 'Live enabled' : 'Writes blocked';
-  $('mode-note').textContent = isTest ? 'No Sheet writes in test mode' : 'Based on settings in the file';
-  $('sheet-status').textContent = hasSheet ? 'ID present' : 'ID needed';
-  $('sheet-note').textContent = hasSheet ? 'Connection has not been verified' : 'Add the Sheet resource ID';
-  $('accounts').textContent = `${accounts} configured`;
-  $('window').textContent = `${days}-day rolling window`;
-  $('labels').textContent = labelsConfirmed ? 'Marked confirmed' : 'Need confirmation';
-  $('writes').textContent = isTest ? 'Disabled in test mode' : labelsConfirmed ? 'Enabled in settings' : 'Blocked until labels confirmed';
-  const issues = [!hasSheet, accounts === 0, !labelsConfirmed].filter(Boolean).length;
-  $('failed-count').textContent = issues;
-  $('failed-note').textContent = issues === 1 ? '1 configuration item needs attention' : `${issues} configuration items need attention`;
-  $('source').textContent = `Checked: ${name}`;
+  $('source').textContent = `Checked locally: ${name}`;
+  $('mode').textContent = 'File loaded';
+  $('sheet-status').textContent = 'ID present';
+  $('accounts').textContent = '1 configured';
+  $('window').textContent = `${Number(days[1]) + 1} days`;
+  $('labels').textContent = 'Review in script';
+  $('writes').textContent = 'Review in script';
+  $('mode-note').textContent = 'Review the selected script before running it; it may write to Zoho.';
+  $('sheet-note').textContent = 'File checks do not confirm Zoho access, execution or schedule status.';
+  $('failed-count').textContent = 'Not verified';
+  $('failed-note').textContent = 'Check the execution log in Zoho Books';
 }
 for (const id of ['feed-file', 'feed-file-alt']) $(id).addEventListener('change', async e => {
   const file = e.target.files[0];
   if (file) try { applyFeed(await file.text(), file.name); } catch { $('source').textContent = 'Could not read the selected file.'; }
 });
-fetch('Armco_Nightly_COGS_Feed.dg').then(r => { if (!r.ok) throw Error(); return r.text(); }).then(t => applyFeed(t, 'Armco_Nightly_COGS_Feed.dg')).catch(() => { $('source').textContent = 'Choose the feed file to check its settings.'; });
+fetch('COGS_Production_Ready.dg').then(r => { if (!r.ok) throw Error(); return r.text(); }).then(t => applyFeed(t, 'COGS_Production_Ready.dg')).catch(() => { $('source').textContent = 'Choose COGS_Production_Ready.dg to check its settings.'; });
 const tasks = [...document.querySelectorAll('[data-task]')];
 let stored = {};
 try { stored = JSON.parse(localStorage.getItem('armco-cogs-checklist') || '{}'); } catch { $('storage-note').textContent = 'Browser storage is unavailable; checklist progress may not be saved.'; }

@@ -1,0 +1,14 @@
+// READ ONLY: inspect G16 on the test worksheet; no cells are changed.
+params = Map();
+params.put("method","cell.content.get");
+params.put("worksheet_name","COGS_Test");
+params.put("row",16);
+params.put("column",7);
+response = invokeurl
+[
+    url : "https://sheet.zoho.com/api/v2/tpwkhf15bca229f6e4cd9a4cd746d10f1ac46"
+    type : POST
+    parameters : params
+    connection : "cogs_sheet_conn"
+];
+info "Formula detection response: " + response;
